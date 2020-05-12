@@ -29,15 +29,20 @@ def get_header_value(data, tag):
 # To recv all data available in the socket
 def recvall(sock):
     data = b''
+    contentLength = -1
     while True:
         try:
             part = sock.recv(BUFF_SIZE)
         except: 
-            data = b'0'
-            break
-        if not part: break
+            if (contentLength == -1):
+                data = b'0'
+                break
+            else: continue
+        if (not part) and contentLength == -1: break
+        if contentLength == -1:
+            contentLength = (int)(get_header_value(part, b'Content-Length').decode('utf-8')) if get_header_value(part, b'Content-Length') != None else -1
         data += part
-        if len(part) < BUFF_SIZE:
+        if (len(data[data.find(b'\r\n\r\n')+3:])-1 >= contentLength if data.find(b'\r\n\r\n') != -1 else len(part) < BUFF_SIZE):
             break
     return data
 
@@ -45,7 +50,7 @@ def recvall(sock):
 def request_func(sock):
     #print("Peer IP: " + str(sock.getpeername()[0]) + ":" + str(sock.getpeername()[1]))
     data = recvall(sock)
-    print(data)
+    #print(data)
     if (data == b''):
         sock.close()
         return
@@ -82,8 +87,10 @@ def request_func(sock):
                 relativePath = url[url.find(b'/', 7):]
                 absolutePath = serverName + relativePath
                 cachePath = hashlib.md5(requestLine + serverName).hexdigest()
+                # Check cache exist
                 if os.path.exists("cache/"+cachePath) and requestLine.split(b' ')[0] == b'GET':
-                    print("check update needed")
+                    # Check if cache is latest version
+                    # print("check update needed")
                     proxySocket.sendall(b'GET ' + \
                         relativePath + \
                         b' HTTP/1.1\r\n' + \
@@ -99,19 +106,22 @@ def request_func(sock):
             dataReceive = recvall(proxySocket)
             if (dataReceive != b'0'):
                 if (cache and dataReceive.split(b' ')[1] == b'304'):
+                    # read from cache
                     f = open("cache/"+cachePath, 'rb')
                     dataReceive = f.read()
                     f.close()
                     print("Return from cache")
                 elif (dataReceive != b'' and readedRequest):
+                    # update cache file
                     f = open("cache/"+cachePath, 'wb+')
                     f.write(dataReceive)
                     f.close()
                     print("save cache")
-                elif (dataReceive != b'' and not readedRequest):
-                    f = open("cache/"+cachePath, 'ab')
-                    f.write(dataReceive)
-                    f.close()
+                #elif (dataReceive != b'' and not readedRequest):
+                    # update cache file
+                #    f = open("cache/"+cachePath, 'ab')
+                #    f.write(dataReceive)
+                #    f.close()
                 elif (dataReceive == b''):
                     break
                 sock.sendall(dataReceive)
@@ -121,6 +131,7 @@ def request_func(sock):
     
     # HTTPS request
     elif (requestLine.split(b' ')[0] == b'CONNECT'):
+        print(requestLine)
         serverName = url[:url.find(b':')]
         port = int(url[url.find(b':')+1:])
         try:
