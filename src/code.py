@@ -10,7 +10,7 @@ from time import strftime, gmtime
 SERVER_PORT = 32101
 BUFF_SIZE = 65536
 # max number of concurrent session
-MAX_THREAD = 100
+MAX_THREAD = 1000
 locale.setlocale(locale.LC_TIME, 'en_US')
 
 # Load the json file which contain a list of blacklisted URL
