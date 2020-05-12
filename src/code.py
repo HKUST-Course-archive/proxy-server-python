@@ -1,18 +1,32 @@
-import socket
-import threading
-import sys
+import socket # basic lib for socket programming
+import threading # for multithreading
+#import sys #
+import json # for processing json file (used for access control)
+import hashlib # for caching function
+import os.path # for caching function
+import locale
+from time import strftime, gmtime
 
 SERVER_PORT = 32101
 BUFF_SIZE = 65536
+# max number of concurrent session
 MAX_THREAD = 100
+locale.setlocale(locale.LC_TIME, 'en_US')
+
+# Load the json file which contain a list of blacklisted URL
+f = open('blacklistURL.json')
+blacklist = json.load(f)
+f.close()
 
 def get_header_value(data, tag):
     data = data.split(b'\r\n')
     for line in data:
         if (line.find(tag) == -1):
-            return None
+            continue
         return line[line.find(b':')+1:]
+    return None
 
+# To recv all data available in the socket
 def recvall(sock):
     data = b''
     while True:
@@ -27,17 +41,26 @@ def recvall(sock):
             break
     return data
 
+# The main function to forward connection
 def request_func(sock):
     #print("Peer IP: " + str(sock.getpeername()[0]) + ":" + str(sock.getpeername()[1]))
     data = recvall(sock)
+    print(data)
     if (data == b''):
         sock.close()
         return
     sock.setblocking(0)
-    flag = True
     requestLine = data.split(b'\r\n')[0]
     url = requestLine.split(b' ')[1]
-    #print(requestLine)
+
+    # Access control part
+    for blacklistURL in blacklist["blacklistURL"]:
+        if (blacklistURL in url.decode('utf-8')):
+            sock.sendall(b'HTTP/1.1 404 Not Found\r\n\r\n')
+            sock.close()
+            return
+
+    # HTTP requests
     if (requestLine.split(b' ')[0] != b'CONNECT'):
         serverName = url[7:url.find(b'/', 7)]
         relativePath = url[url.find(b'/', 7):]
@@ -48,17 +71,55 @@ def request_func(sock):
         except socket.error as err:
             print("Error: init socket to connect web server\n")
         proxySocket.connect((socket.gethostbyname(serverName), port))
-        proxySocket.setblocking(0)
         while (data != b''):
+            cache = False
+            readedRequest = False
             if (data != b'0'):
-                dataRequest = requestLine.split(b' ')[0] + b" " + relativePath + b" " + requestLine.split(b' ')[2].split(b'\r\n')[0] + data[data.find(b'\r\n'):]
-                proxySocket.sendall(dataRequest)
+                readedRequest = True
+                requestLine = data.split(b'\r\n')[0]
+                print(requestLine)
+                url = requestLine.split(b' ')[1]
+                relativePath = url[url.find(b'/', 7):]
+                absolutePath = serverName + relativePath
+                cachePath = hashlib.md5(requestLine + serverName).hexdigest()
+                if os.path.exists("cache/"+cachePath) and requestLine.split(b' ')[0] == b'GET':
+                    print("check update needed")
+                    proxySocket.sendall(b'GET ' + \
+                        relativePath + \
+                        b' HTTP/1.1\r\n' + \
+                        b'Host:' + get_header_value(data, b'Host') + \
+                        b'\r\nIf-Modified-Since: ' + \
+                        strftime("%a, %d %b %Y %H:%M:%S GMT", gmtime(os.path.getmtime("cache/"+cachePath))).encode() + \
+                        b'\r\n\r\n')
+                    cache = True
+                else:
+                    dataRequest = requestLine.split(b' ')[0] + b" " + relativePath + b" " + requestLine.split(b' ')[2].split(b'\r\n')[0] + data[data.find(b'\r\n'):]
+                    proxySocket.sendall(dataRequest)
+
             dataReceive = recvall(proxySocket)
             if (dataReceive != b'0'):
+                if (cache and dataReceive.split(b' ')[1] == b'304'):
+                    f = open("cache/"+cachePath, 'rb')
+                    dataReceive = f.read()
+                    f.close()
+                    print("Return from cache")
+                elif (dataReceive != b'' and readedRequest):
+                    f = open("cache/"+cachePath, 'wb+')
+                    f.write(dataReceive)
+                    f.close()
+                    print("save cache")
+                elif (dataReceive != b'' and not readedRequest):
+                    f = open("cache/"+cachePath, 'ab')
+                    f.write(dataReceive)
+                    f.close()
+                elif (dataReceive == b''):
+                    break
                 sock.sendall(dataReceive)
             data = recvall(sock)
         #print(dataRequest)
         proxySocket.close()
+    
+    # HTTPS request
     elif (requestLine.split(b' ')[0] == b'CONNECT'):
         serverName = url[:url.find(b':')]
         port = int(url[url.find(b':')+1:])
@@ -76,10 +137,9 @@ def request_func(sock):
             dataRec = recvall(proxySocket)
             if (dataRec != b'0'):
                 sock.sendall(dataRec)
-            
         proxySocket.close()
     sock.close()
-    print("closed")
+    print("closed " + serverName.decode('utf-8'))
     return
 
 # init server socket
@@ -97,6 +157,7 @@ while True:
     while (len(threading.enumerate()) >= MAX_THREAD):
         pass
     connfd, address = listenfd.accept()
+    # multithreading
     thread = threading.Thread(target=request_func, args=(connfd,), daemon=True)
     thread.start()
 
