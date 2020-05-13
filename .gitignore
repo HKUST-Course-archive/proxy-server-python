@@ -1,2 +1,5 @@
 cache/*
 !cache/*.txt
+*.mp4
+*.docx
+*.pdf
